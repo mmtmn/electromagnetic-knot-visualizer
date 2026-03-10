@@ -9,6 +9,11 @@ enum class FieldMode {
     Torus = 1,
 };
 
+enum class VisualizationMode {
+    FieldLines = 0,
+    Topology = 1,
+};
+
 class Simulation {
 public:
     Simulation() = default;
@@ -17,8 +22,16 @@ public:
     Simulation(const Simulation&) = delete;
     Simulation& operator=(const Simulation&) = delete;
 
-    bool initialize(std::size_t linesPerFamily, std::size_t pointsPerLine, FieldMode fieldMode, int torusP, int torusQ);
+    bool initialize(
+        std::size_t linesPerFamily,
+        std::size_t pointsPerLine,
+        FieldMode fieldMode,
+        int torusP,
+        int torusQ,
+        VisualizationMode visualizationMode
+    );
     void setFieldConfig(FieldMode fieldMode, int torusP, int torusQ);
+    void setVisualizationMode(VisualizationMode visualizationMode);
     void update(float dt, float timeSeconds);
     void shutdown();
 
@@ -30,6 +43,7 @@ private:
     std::size_t pointsPerLine_ = 0;
     std::size_t particleCount_ = 0;
     FieldMode fieldMode_ = FieldMode::Hopfion;
+    VisualizationMode visualizationMode_ = VisualizationMode::FieldLines;
     int torusP_ = 2;
     int torusQ_ = 3;
     GLuint vertexBuffer_ = 0;

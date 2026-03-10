@@ -11,6 +11,7 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kSpatialScale = 1.75f;
 constexpr float kTimeScale = 0.42f;
 constexpr float kTraceStep = 0.075f;
+constexpr float kHopfFieldLineTraceStep = 0.060f;
 constexpr float kHopfDisplaySpin = 0.16f;
 
 struct ParticleVertex {
@@ -289,6 +290,11 @@ __device__ FieldSample sampleField(float3 position, float timeSeconds, int field
         : sampleHopfionField(position, timeSeconds);
 }
 
+__device__ bool useTopologyVisualization(int fieldMode, int visualizationMode) {
+    return fieldMode == static_cast<int>(FieldMode::Hopfion) &&
+        visualizationMode == static_cast<int>(VisualizationMode::Topology);
+}
+
 __device__ SeedAngles structuredSeedAngles(int lineIndex, int linesPerFamily, int family, int p, int q) {
     const int shellCountBase = linesPerFamily < 18 ? linesPerFamily : 18;
     const int shellCount = shellCountBase > 0 ? shellCountBase : 1;
@@ -355,21 +361,35 @@ __device__ float3 rk4StreamlineStep(float3 position, float ds, float timeSeconds
     return add3(position, mul3(weighted, ds / 6.0f));
 }
 
-__device__ float3 traceSamplePoint(int lineIndex, int sampleIndex, int linesPerFamily, int pointsPerLine, int family, float timeSeconds, int fieldMode, int p, int q) {
-    if (fieldMode == static_cast<int>(FieldMode::Hopfion)) {
+__device__ float3 traceSamplePoint(
+    int lineIndex,
+    int sampleIndex,
+    int linesPerFamily,
+    int pointsPerLine,
+    int family,
+    float timeSeconds,
+    int fieldMode,
+    int p,
+    int q,
+    int visualizationMode
+) {
+    if (useTopologyVisualization(fieldMode, visualizationMode)) {
         return hopfFiberPoint(lineIndex, sampleIndex, linesPerFamily, pointsPerLine, family, timeSeconds);
     }
 
     const int seedP = fieldMode == static_cast<int>(FieldMode::Torus) ? p : 1;
     const int seedQ = fieldMode == static_cast<int>(FieldMode::Torus) ? q : 1;
     float3 position = hopfSeed(lineIndex, linesPerFamily, family, seedP, seedQ);
+    const float traceStep = fieldMode == static_cast<int>(FieldMode::Hopfion)
+        ? kHopfFieldLineTraceStep
+        : kTraceStep;
 
     const float centered = static_cast<float>(sampleIndex) - 0.5f * static_cast<float>(pointsPerLine - 1);
     const int stepCount = abs(static_cast<int>(centered));
     const float directionSign = centered < 0.0f ? -1.0f : 1.0f;
 
     for (int step = 0; step < stepCount; ++step) {
-        position = rk4StreamlineStep(position, directionSign * kTraceStep, timeSeconds, family, fieldMode, p, q);
+        position = rk4StreamlineStep(position, directionSign * traceStep, timeSeconds, family, fieldMode, p, q);
 
         const float radius2 = lengthSquared3(position);
         if (radius2 > 38.0f) {
@@ -381,16 +401,30 @@ __device__ float3 traceSamplePoint(int lineIndex, int sampleIndex, int linesPerF
     return position;
 }
 
-__device__ void writeVertex(ParticleVertex& vertex, float3 position, int lineIndex, int sampleIndex, int linesPerFamily, int pointsPerLine, int family, float timeSeconds, int fieldMode, int p, int q) {
+__device__ void writeVertex(
+    ParticleVertex& vertex,
+    float3 position,
+    int lineIndex,
+    int sampleIndex,
+    int linesPerFamily,
+    int pointsPerLine,
+    int family,
+    float timeSeconds,
+    int fieldMode,
+    int p,
+    int q,
+    int visualizationMode
+) {
     const FieldSample field = sampleField(position, timeSeconds, fieldMode, p, q);
     const float3 direction = streamlineDirection(field, family);
     const float energy = field.energy;
+    const bool topologyView = useTopologyVisualization(fieldMode, visualizationMode);
 
     const float normalizedLine = (static_cast<float>(lineIndex) + 0.5f) / static_cast<float>(linesPerFamily);
     const float normalizedSample = (static_cast<float>(sampleIndex) + 0.5f) / static_cast<float>(pointsPerLine);
     const float edgeFade = sinf(normalizedSample * kPi);
     const float energyBoost = smoothstep(0.002f, 0.060f, energy);
-    const int emphasisStrideBase = fieldMode == static_cast<int>(FieldMode::Hopfion) ? (linesPerFamily / 10) : (linesPerFamily / 8);
+    const int emphasisStrideBase = topologyView ? (linesPerFamily / 10) : (linesPerFamily / 6);
     const int emphasisStride = emphasisStrideBase > 0 ? emphasisStrideBase : 1;
     const bool referenceLine = (lineIndex % emphasisStride) == 0;
 
@@ -400,19 +434,35 @@ __device__ void writeVertex(ParticleVertex& vertex, float3 position, int lineInd
     }
 
     const float3 poyntingTint = mix3(make_float3(0.95f, 0.96f, 1.00f), make_float3(0.65f, 0.88f, 1.00f), 0.5f + 0.5f * field.poynting.y);
+    const float lineBase = topologyView
+        ? ((referenceLine ? 0.72f : 0.22f) + (referenceLine ? 0.90f : 0.38f) * energyBoost)
+        : ((referenceLine ? 0.64f : 0.42f) + (referenceLine ? 0.82f : 0.64f) * energyBoost);
+    const float alpha = topologyView
+        ? (referenceLine ? 0.90f : 0.18f) * (0.75f + 0.25f * edgeFade)
+        : (referenceLine ? 0.92f : 0.52f) * (0.82f + 0.18f * edgeFade);
     const float3 color = mul3(
-        mix3(baseColor, poyntingTint, 0.14f + 0.08f * normalizedLine),
-        (referenceLine ? 0.72f : 0.22f) + (referenceLine ? 0.90f : 0.38f) * energyBoost
+        mix3(baseColor, poyntingTint, topologyView ? (0.14f + 0.08f * normalizedLine) : (0.20f + 0.12f * normalizedLine)),
+        lineBase
     );
-    const float alpha = (referenceLine ? 0.90f : 0.18f) * (0.75f + 0.25f * edgeFade);
 
-    const float size = 3.2f + 2.4f * energyBoost + 0.8f * fabsf(direction.y);
+    const float size = topologyView
+        ? (3.2f + 2.4f * energyBoost + 0.8f * fabsf(direction.y))
+        : (3.6f + 2.8f * energyBoost + 0.9f * fabsf(direction.y));
 
     vertex.positionSize = make_float4(position.x, position.y, position.z, size);
     vertex.color = make_float4(color.x, color.y, color.z, alpha);
 }
 
-__global__ void generateFieldLineVertices(ParticleVertex* vertices, int linesPerFamily, int pointsPerLine, float timeSeconds, int fieldMode, int p, int q) {
+__global__ void generateFieldLineVertices(
+    ParticleVertex* vertices,
+    int linesPerFamily,
+    int pointsPerLine,
+    float timeSeconds,
+    int fieldMode,
+    int p,
+    int q,
+    int visualizationMode
+) {
     const int totalVertexCount = linesPerFamily * pointsPerLine * 2;
     const int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= totalVertexCount) {
@@ -425,8 +475,32 @@ __global__ void generateFieldLineVertices(ParticleVertex* vertices, int linesPer
     const int lineIndex = localIndex / pointsPerLine;
     const int sampleIndex = localIndex % pointsPerLine;
 
-    const float3 position = traceSamplePoint(lineIndex, sampleIndex, linesPerFamily, pointsPerLine, family, timeSeconds, fieldMode, p, q);
-    writeVertex(vertices[index], position, lineIndex, sampleIndex, linesPerFamily, pointsPerLine, family, timeSeconds, fieldMode, p, q);
+    const float3 position = traceSamplePoint(
+        lineIndex,
+        sampleIndex,
+        linesPerFamily,
+        pointsPerLine,
+        family,
+        timeSeconds,
+        fieldMode,
+        p,
+        q,
+        visualizationMode
+    );
+    writeVertex(
+        vertices[index],
+        position,
+        lineIndex,
+        sampleIndex,
+        linesPerFamily,
+        pointsPerLine,
+        family,
+        timeSeconds,
+        fieldMode,
+        p,
+        q,
+        visualizationMode
+    );
 }
 
 bool checkCuda(cudaError_t status, const char* what) {
@@ -444,7 +518,14 @@ Simulation::~Simulation() {
     shutdown();
 }
 
-bool Simulation::initialize(std::size_t linesPerFamily, std::size_t pointsPerLine, FieldMode fieldMode, int torusP, int torusQ) {
+bool Simulation::initialize(
+    std::size_t linesPerFamily,
+    std::size_t pointsPerLine,
+    FieldMode fieldMode,
+    int torusP,
+    int torusQ,
+    VisualizationMode visualizationMode
+) {
     shutdown();
 
     int deviceCount = 0;
@@ -463,6 +544,7 @@ bool Simulation::initialize(std::size_t linesPerFamily, std::size_t pointsPerLin
     pointsPerLine_ = pointsPerLine;
     particleCount_ = linesPerFamily_ * pointsPerLine_ * 2;
     fieldMode_ = fieldMode;
+    visualizationMode_ = visualizationMode;
     torusP_ = torusP;
     torusQ_ = torusQ;
 
@@ -485,6 +567,10 @@ void Simulation::setFieldConfig(FieldMode fieldMode, int torusP, int torusQ) {
     fieldMode_ = fieldMode;
     torusP_ = torusP;
     torusQ_ = torusQ;
+}
+
+void Simulation::setVisualizationMode(VisualizationMode visualizationMode) {
+    visualizationMode_ = visualizationMode;
 }
 
 void Simulation::update(float, float timeSeconds) {
@@ -512,7 +598,8 @@ void Simulation::update(float, float timeSeconds) {
         timeSeconds,
         static_cast<int>(fieldMode_),
         torusP_,
-        torusQ_
+        torusQ_,
+        static_cast<int>(visualizationMode_)
     );
     checkCuda(cudaGetLastError(), "generateFieldLineVertices launch");
     checkCuda(cudaGraphicsUnmapResources(1, &interopResource_), "cudaGraphicsUnmapResources");
@@ -533,6 +620,7 @@ void Simulation::shutdown() {
     pointsPerLine_ = 0;
     particleCount_ = 0;
     fieldMode_ = FieldMode::Hopfion;
+    visualizationMode_ = VisualizationMode::FieldLines;
     torusP_ = 2;
     torusQ_ = 3;
 }

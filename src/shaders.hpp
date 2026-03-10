@@ -297,7 +297,7 @@ void main() {
     gl_Position = uProjection * viewPos;
 
     float viewDepth = -viewPos.z;
-    float fade = smoothstep(0.35, 1.05, viewDepth);
+    float fade = smoothstep(0.20, 0.85, viewDepth);
     float energyHint = clamp((aPositionSize.w - 2.0) / 4.5, 0.0, 1.0);
     vColor = vec4(aColor.rgb * (0.72 + 0.28 * energyHint) * fade, aColor.a * fade);
 }

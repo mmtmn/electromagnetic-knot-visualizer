@@ -136,6 +136,7 @@ struct InputState {
     bool tabHeld = false;
     bool resetHeld = false;
     bool filterHeld = false;
+    bool viewModeHeld = false;
     bool preset1Held = false;
     bool preset2Held = false;
     bool preset3Held = false;
@@ -146,6 +147,7 @@ struct InputState {
 struct RuntimeState {
     RunConfig config;
     FilterMode filterMode = FilterMode::Filmic;
+    VisualizationMode visualizationMode = VisualizationMode::FieldLines;
     float simulationStartTime = 0.0f;
 };
 
@@ -896,6 +898,26 @@ FilterMode nextFilterMode(FilterMode filterMode) {
     }
 }
 
+const char* visualizationModeName(VisualizationMode visualizationMode, FieldMode fieldMode) {
+    if (fieldMode != FieldMode::Hopfion) {
+        return "FIELD LINES";
+    }
+
+    switch (visualizationMode) {
+        case VisualizationMode::Topology:
+            return "TOPOLOGY";
+        case VisualizationMode::FieldLines:
+        default:
+            return "FIELD LINES";
+    }
+}
+
+VisualizationMode nextVisualizationMode(VisualizationMode visualizationMode) {
+    return visualizationMode == VisualizationMode::FieldLines
+        ? VisualizationMode::Topology
+        : VisualizationMode::FieldLines;
+}
+
 void resetSceneState(AppState& state, float currentTime) {
     state.camera.reset();
     state.runtime.simulationStartTime = currentTime;
@@ -903,7 +925,11 @@ void resetSceneState(AppState& state, float currentTime) {
 
 void applyRuntimePreset(AppState& state, Simulation& simulation, const NamedFieldPreset& preset, float currentTime) {
     applyFieldPreset(preset, state.runtime.config);
+    if (state.runtime.config.fieldMode != FieldMode::Hopfion) {
+        state.runtime.visualizationMode = VisualizationMode::FieldLines;
+    }
     simulation.setFieldConfig(state.runtime.config.fieldMode, state.runtime.config.torusP, state.runtime.config.torusQ);
+    simulation.setVisualizationMode(state.runtime.visualizationMode);
     resetSceneState(state, currentTime);
 }
 
@@ -914,13 +940,21 @@ bool consumeKeyPress(GLFWwindow* window, int key, bool& held) {
     return pressed;
 }
 
-std::string buildWindowTitle(const RunConfig& config, const QualityPreset& quality, FilterMode filterMode, float fps) {
+std::string buildWindowTitle(
+    const RunConfig& config,
+    const QualityPreset& quality,
+    FilterMode filterMode,
+    VisualizationMode visualizationMode,
+    float fps
+) {
     std::string title = "EM Loop | ";
     title += uppercaseCopy(quality.name);
     title += " | ";
     title += namedFieldLabel(config);
     title += " | ";
     title += fieldDescriptor(config);
+    title += " | ";
+    title += visualizationModeName(visualizationMode, config.fieldMode);
     title += " | ";
     title += filterModeName(filterMode);
     title += " | ";
@@ -964,7 +998,14 @@ void printControls(const QualityPreset& quality) {
         << "Quality: " << quality.name << '\n';
 }
 
-void buildOverlayHud(OverlayRenderer& overlay, const RunConfig& config, const QualityPreset& quality, FilterMode filterMode, float fps) {
+void buildOverlayHud(
+    OverlayRenderer& overlay,
+    const RunConfig& config,
+    const QualityPreset& quality,
+    FilterMode filterMode,
+    VisualizationMode visualizationMode,
+    float fps
+) {
     overlay.clear();
 
     const std::array<float, 4> panelColor{0.015f, 0.025f, 0.040f, 0.78f};
@@ -973,16 +1014,17 @@ void buildOverlayHud(OverlayRenderer& overlay, const RunConfig& config, const Qu
     const std::array<float, 4> accentColor{0.22f, 0.88f, 0.92f, 0.92f};
     const std::array<float, 4> warmColor{1.00f, 0.72f, 0.26f, 0.92f};
 
-    overlay.addRect(18.0f, 18.0f, 430.0f, 152.0f, panelColor);
+    overlay.addRect(18.0f, 18.0f, 430.0f, 172.0f, panelColor);
     overlay.addRect(18.0f, 18.0f, 430.0f, 20.0f, borderColor);
-    overlay.addRect(18.0f, 150.0f, 430.0f, 152.0f, borderColor);
+    overlay.addRect(18.0f, 170.0f, 430.0f, 172.0f, borderColor);
 
     overlay.addText(32.0f, 32.0f, 3.0f, "EM LOOP", accentColor);
     overlay.addText(32.0f, 54.0f, 2.0f, "QUALITY: " + uppercaseCopy(quality.name), textColor);
     overlay.addText(32.0f, 74.0f, 2.0f, "PRESET: " + namedFieldLabel(config), warmColor);
     overlay.addText(32.0f, 94.0f, 2.0f, "FIELD: " + fieldDescriptor(config), textColor);
-    overlay.addText(32.0f, 114.0f, 2.0f, "FILTER: " + std::string(filterModeName(filterMode)), textColor);
-    overlay.addText(32.0f, 134.0f, 2.0f, "FPS: " + std::to_string(static_cast<int>(fps + 0.5f)), accentColor);
+    overlay.addText(32.0f, 114.0f, 2.0f, "VIEW: " + std::string(visualizationModeName(visualizationMode, config.fieldMode)), textColor);
+    overlay.addText(32.0f, 134.0f, 2.0f, "FILTER: " + std::string(filterModeName(filterMode)), textColor);
+    overlay.addText(32.0f, 154.0f, 2.0f, "FPS: " + std::to_string(static_cast<int>(fps + 0.5f)), accentColor);
 }
 
 }  // namespace
@@ -1068,7 +1110,8 @@ int main(int argc, char** argv) {
                 quality.pointsPerLine,
                 state.runtime.config.fieldMode,
                 state.runtime.config.torusP,
-                state.runtime.config.torusQ
+                state.runtime.config.torusQ,
+                state.runtime.visualizationMode
             )) {
             throw std::runtime_error("Failed to initialize CUDA particle simulation");
         }
@@ -1095,13 +1138,23 @@ int main(int argc, char** argv) {
             << "  Tab   toggle mouse capture\n"
             << "  R     reset scene\n"
             << "  1 2 3 switch presets\n"
+            << "  T     toggle Hopfion view\n"
             << "  F     cycle filters\n"
             << "  Esc   quit\n";
         
         float lastTime = static_cast<float>(glfwGetTime());
         state.runtime.simulationStartTime = lastTime;
         float fpsSmoothed = 60.0f;
-        glfwSetWindowTitle(window, buildWindowTitle(state.runtime.config, quality, state.runtime.filterMode, fpsSmoothed).c_str());
+        glfwSetWindowTitle(
+            window,
+            buildWindowTitle(
+                state.runtime.config,
+                quality,
+                state.runtime.filterMode,
+                state.runtime.visualizationMode,
+                fpsSmoothed
+            ).c_str()
+        );
 
         while (glfwWindowShouldClose(window) == GLFW_FALSE) {
             const float currentTime = static_cast<float>(glfwGetTime());
@@ -1113,7 +1166,16 @@ int main(int argc, char** argv) {
             glfwPollEvents();
             processInput(window, state, simulation, currentTime, dt);
 
-            glfwSetWindowTitle(window, buildWindowTitle(state.runtime.config, quality, state.runtime.filterMode, fpsSmoothed).c_str());
+            glfwSetWindowTitle(
+                window,
+                buildWindowTitle(
+                    state.runtime.config,
+                    quality,
+                    state.runtime.filterMode,
+                    state.runtime.visualizationMode,
+                    fpsSmoothed
+                ).c_str()
+            );
         
             if (state.framebufferResized) {
                 sceneFramebuffer.create(state.framebufferWidth, state.framebufferHeight);
@@ -1159,12 +1221,14 @@ int main(int argc, char** argv) {
             glEnable(GL_DEPTH_TEST);
             glDepthMask(GL_TRUE);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glLineWidth(1.2f);
+            const bool topologyLoops = state.runtime.config.fieldMode == FieldMode::Hopfion &&
+                state.runtime.visualizationMode == VisualizationMode::Topology;
+            glLineWidth(topologyLoops ? 1.2f : 1.5f);
 
             const GLsizei pointsPerLine = static_cast<GLsizei>(quality.pointsPerLine);
             const GLsizei linesPerFamily = static_cast<GLsizei>(quality.linesPerFamily);
             const GLsizei familyStride = pointsPerLine * linesPerFamily;
-            const GLenum linePrimitive = state.runtime.config.fieldMode == FieldMode::Hopfion ? GL_LINE_LOOP : GL_LINE_STRIP;
+            const GLenum linePrimitive = topologyLoops ? GL_LINE_LOOP : GL_LINE_STRIP;
 
             for (GLsizei family = 0; family < 2; ++family) {
                 const GLsizei familyBase = family * familyStride;
@@ -1225,7 +1289,14 @@ int main(int argc, char** argv) {
             glBindVertexArray(fullscreenVao);
             glDrawArrays(GL_TRIANGLES, 0, 3);
 
-            buildOverlayHud(overlayRenderer, state.runtime.config, quality, state.runtime.filterMode, fpsSmoothed);
+            buildOverlayHud(
+                overlayRenderer,
+                state.runtime.config,
+                quality,
+                state.runtime.filterMode,
+                state.runtime.visualizationMode,
+                fpsSmoothed
+            );
             overlayRenderer.render(state.framebufferWidth, state.framebufferHeight);
 
             glfwSwapBuffers(window);
@@ -1361,6 +1432,11 @@ void processInput(GLFWwindow* window, AppState& state, Simulation& simulation, f
     }
     if (consumeKeyPress(window, GLFW_KEY_F, state.input.filterHeld)) {
         state.runtime.filterMode = nextFilterMode(state.runtime.filterMode);
+    }
+    if (consumeKeyPress(window, GLFW_KEY_T, state.input.viewModeHeld) &&
+        state.runtime.config.fieldMode == FieldMode::Hopfion) {
+        state.runtime.visualizationMode = nextVisualizationMode(state.runtime.visualizationMode);
+        simulation.setVisualizationMode(state.runtime.visualizationMode);
     }
 
     const Vec3 worldUp{0.0f, 1.0f, 0.0f};
